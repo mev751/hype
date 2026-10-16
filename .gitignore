@@ -1,0 +1,22 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+monitor.log
+
+# Environment & Secrets
+.env
+.env.*
+config.local.py
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE / Editor files
+.vscode/
+.idea/
