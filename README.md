@@ -15,9 +15,6 @@
 | 文件 | 说明 |
 |---|---|
 | `HL_SKHY_STRAT_3.9.py` | 主程序（当前版本，含参数依据注释） |
-| `HL_SKHY_STRAT_3.8.py` | v3.8 旧版 |
-| `monitor.py` | 独立的价格报警监控（依赖本机 `config.py`/`binance_client.py` 等，与网格无耦合，可不部署） |
-| `cloudflare-worker/` | 独立的价格/资金费率监控 Worker（可不部署） |
 | `sync.sh` | 一键提交并推送到 GitHub（`mev751/hype`） |
 | `README.md` | 本文档 |
 
