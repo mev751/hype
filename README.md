@@ -1,10 +1,9 @@
-# HL_SKHY_STRAT_3.9 — SKHY/SKHX 相对价值做空网格机器人
+# SKHY/SKHX 相对价值做空网格机器人
 
 基于 Hyperliquid dex（`xyz`）的**相对价值网格策略**：同时做空 `xyz:SKHY`、做多 `xyz:SKHX`（即 SKHYNIX），在 K 值区间内来回收割波动利润。
 
-- 标的 A：`xyz:SKHY`（程序内显示为 SKHY-USDC），价格约 129U
-- 标的 B：`xyz:SKHX`（程序内显示为 SKHYNIX-USDC），价格约 873U
-- 方向：**做空 SKHY + 做多 SKHX**（启动时会校验方向，反了会拒绝启动）
+- 标的 A：`xyz:SKHY`（程序内显示为 SKHY-USDC）
+- 标的 B：`xyz:SKHX`（程序内显示为 SKHYNIX-USDC）
 
 > ⚠️ 本程序涉及真实资金与杠杆交易。请先跑模拟模式，自行确认 SDK 版本、账户模式、杠杆设置与风险预算后再上实盘。
 
@@ -14,8 +13,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| `HL_SKHY_STRAT_3.9.py` | 主程序（当前版本，含参数依据注释） |
-| `sync.sh` | 一键提交并推送到 GitHub（`mev751/hype`） |
+| 主程序（当前版本，含参数依据注释） |
+| `sync.sh` | 一键提交并推送到 GitHub|
 | `README.md` | 本文档 |
 
 ---
@@ -47,7 +46,7 @@ K = SKHY买一价 × 10 / SKHX卖一价
 - **止盈**：当 `K ≤ P1 + (已持层数 − 2) × STEP_X` 时，平掉最上层：买回 SKHY + 卖出 SKHX，实现价差利润。
 - 两腿名义按 `Q_USDC` 对齐，`HEDGE_IMBALANCE_TOLERANCE=15%` 内视为健康。
 
-### 当前参数（v3.9 配置区）
+### 当前参数配置区
 
 | 参数 | 值 | 含义 |
 |---|---|---|
@@ -146,10 +145,7 @@ SPLIT_N = 4~6             # 拆单，每片 ~3~5 币，配合 SLICE_DELAY 分批
 ./sync.sh "提交说明"        # 自动 git add -A + commit + push（含直连/隧道回退）
 ```
 
-（Git 远端：`git@github.com:mev751/hype.git`，分支 `main`）
-
 ---
-
 ## 风险提示
 
 - 价差网格收益依赖 K 在区间内来回波动；**K 单边突破 1.489 上沿**时最多 14 层封顶，只能满仓扛回撤（上破 1.52 浮亏约 −480U，1.55 约 −820U，满载粗估）。
