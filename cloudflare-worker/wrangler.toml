@@ -1,7 +1,0 @@
-name = "crypto-oil-arbitrage-monitor"
-main = "worker.js"
-compatibility_date = "2024-10-01"
-
-# 开启 Workers 免费配额，默认全球 Anycast 边缘路由
-[placement]
-mode = "smart"
