@@ -13,8 +13,11 @@
 
 | 文件 | 说明 |
 |---|---|
-| `HL_SKHY_STRAT_3.9.py` | 主程序（当前版本，含参数依据注释） |
+| `HL_SKHY_STRAT_3.9.py` | 主程序（Python 版，含参数依据注释） |
+| `cmd/hlstrat/` | 主程序（**Go 版**入口，`HL_SKHY_STRAT_3.9.py` 的重写） |
+| `internal/hl/` | Go 版内核：EIP-712 签名下单、行情、网格状态机、对账、终端 UI |
 | `hl_ratio_alert.py` | 比率监控 + Bark 手机报警（只读行情，不下单） |
+| `.github/workflows/go-build.yml` | GitHub Actions：Go 交叉编译 + 签名向量测试 |
 | `README.md` | 本文档 |
 
 ---
@@ -105,6 +108,29 @@ PAIR_SLIPPAGE_PCT = 0.1   # 放宽 IOC 限价（默认 0.02）
 # 或将
 SPLIT_N = 4~6             # 拆单，每片 ~3~5 币，配合 SLICE_DELAY 分批成交
 ```
+
+---
+
+## Go 版本（`cmd/hlstrat`）
+
+`HL_SKHY_STRAT_3.9.py` 的功能等价重写：策略参数、下单顺序、回滚与对账逻辑一一对应，环境变量也完全一致（`HL_SECRET_KEY` / `HL_WALLET_ADDR` / `HL_STOP_LOSS_USDC` / `HL_LOG_PATH`）。不设 `HL_SECRET_KEY` 即为模拟模式。
+
+技术要点：
+
+- **不依赖第三方交易 SDK**：REST（`/info`、`/exchange`）、EIP-712 签名（msgpack 动作哈希 + `Agent` 类型域）、secp256k1 全部自行实现，签名结果与 `hyperliquid-python-sdk` **逐字节一致**（`internal/hl/sign_test.go` 内置 Python 生成的固定向量，`go test ./...` 校验）。
+- builder-deployed dex 的 asset id 按官方规则推导：`110000 + dex序号×10000 + 币种下标`（当前 `xyz:SKHX` = 110022、`xyz:SKHY` = 110099）。
+- 行情订阅 `wss://api.hyperliquid.xyz/ws` 的 `l2Book`，断线退避重连；交易仍由**单协程串行执行**，与 v3.9 的"单工作线程"设计一致。
+
+本地构建（Go 1.25+）：
+
+```bash
+go build -trimpath -o hlstrat ./cmd/hlstrat
+./hlstrat                        # 模拟模式
+HL_SECRET_KEY='0x...' ./hlstrat  # 实盘
+go test ./...                    # 校验签名向量与数值格式
+```
+
+不装 Go 也可以直接用 GitHub Actions 产物：推送后到仓库 **Actions → go build** 下载，覆盖 Linux amd64/arm64 与 Windows amd64（如 `hlstrat-linux-amd64`），静态编译、免运行时依赖。
 
 ---
 
