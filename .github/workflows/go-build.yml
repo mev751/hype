@@ -61,7 +61,7 @@ jobs:
           if-no-files-found: error
 
       # main 分支：自动更新 "latest" Release（免登录下载）
-      - name: publish release: latest
+      - name: publish release (latest)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
@@ -86,7 +86,7 @@ jobs:
           fail_on_unmatched_files: true
 
       # 版本 tag（v*）：发布对应版本 Release
-      - name: publish release: version tag
+      - name: publish release (version tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
