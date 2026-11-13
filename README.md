@@ -17,6 +17,11 @@
 | `cmd/hlstrat/` | 主程序（**Go 版**入口，`HL_SKHY_STRAT_3.9.py` 的重写） |
 | `internal/hl/` | Go 版内核：EIP-712 签名下单、行情、网格状态机、对账、终端 UI |
 | `hype.toml` | **Go 版参数配置**（支持热加载，保存即生效） |
+| `docs/architecture.md` | **HFT 平台架构设计**（Hyperliquid × Binance 跨所套利） |
+| `docs/adr/` | 架构决策记录（ADR） |
+| `internal/hft/` | HFT 骨架：`venue` / `book` / `strategy` / `risk` / `exec` / `portfolio` / `obs` / `hotpath` |
+| `cmd/hftd/`、`cmd/controld/` | HFT 主进程与控制面（Phase 1 骨架） |
+| `rust/hl-codec/` | Rust 热路径编解码/签名（Phase 4） |
 | `hl_ratio_alert.py` | 比率监控 + Bark 手机报警（只读行情，不下单） |
 | `.github/workflows/go-build.yml` | GitHub Actions：编译 Linux amd64 二进制 + 测试 |
 | `README.md` | 本文档 |
@@ -160,6 +165,30 @@ chmod +x hlstrat
 - 未知字段（拼写错误）会直接报错并指出具体键名，例如 `未知配置项: strategy.q_uds`。
 - 实盘中修改 `leverage` 会异步把新杠杆同步到交易所（失败只告警，不中断交易）。
 - `HL_STOP_LOSS_USDC` 设置时会覆盖配置文件里的 `risk.stop_loss_usdc`（UI 启动提示会说明）。
+
+---
+
+## HFT 平台（设计阶段，尚未产生交易行为）
+
+面向 Hyperliquid × Binance 跨所套利的低延迟平台，与上面的网格程序**互相独立**（`hlstrat` 行为不受影响）。
+
+| 内容 | 位置 |
+|---|---|
+| 架构设计（定位、约束、组件、线程模型、延迟预算、风控、观测、部署、路线图） | [`docs/architecture.md`](docs/architecture.md) |
+| ADR：Rust 热路径与 FFI 边界 | [`docs/adr/0001-rust-hotpath-ffi.md`](docs/adr/0001-rust-hotpath-ffi.md) |
+| Go 骨架（接口 + 空实现） | `internal/hft/{venue,book,strategy,risk,exec,portfolio,obs,hotpath}` |
+| 进程骨架 | `cmd/hftd`（主进程）、`cmd/controld`（独立控制面/全平） |
+| Rust 骨架 | `rust/hl-codec`（cdylib，导出 `hl_abi_version`） |
+
+**当前状态**：只有接口与骨架，`cmd/hftd` 打印一行即退出，不会下单。
+`venue` 适配器的 `Place/Stream/Positions` 均返回 `ErrNotImplemented`。
+
+**设计要点**（细节见架构文档）：
+- 单写者策略循环：行情/成交/定时器统一入队，策略状态只由一条 goroutine 修改 → 无锁、可回放；
+- 风控与执行分离：`risk.Gate` 同步校验（名义/净额/速率/失衡/日亏/kill-switch），`exec.Router` 负责幂等与 ack 跟踪；
+- 下单超时**绝不直接重发**，必须先按 `ClientID`（HL `cloid` / BN `newClientOrderId`）查询最终状态；
+- `controld` 独立进程 + `/run/hft/killswitch` 文件标志，保证策略进程卡死时仍能阻断下单并全平；
+- 延迟上限由公网 RTT 决定（10–30 ms），因此先做 Phase 0 测量（`cmd/latency-probe`，待实现）再决定优化投入。
 
 ---
 

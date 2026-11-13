@@ -20,3 +20,6 @@ env/
 # IDE / Editor files
 .vscode/
 .idea/
+
+# Rust
+rust/target/

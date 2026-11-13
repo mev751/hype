@@ -1,0 +1,12 @@
+[package]
+name = "hl-codec"
+version = "0.1.0"
+edition = "2021"
+description = "Hyperliquid 热路径编解码与签名（Phase 4 实现）"
+license = "MIT"
+
+[lib]
+name = "hl_codec"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
