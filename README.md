@@ -16,8 +16,9 @@
 | `HL_SKHY_STRAT_3.9.py` | 主程序（Python 版，含参数依据注释） |
 | `cmd/hlstrat/` | 主程序（**Go 版**入口，`HL_SKHY_STRAT_3.9.py` 的重写） |
 | `internal/hl/` | Go 版内核：EIP-712 签名下单、行情、网格状态机、对账、终端 UI |
+| `hype.toml` | **Go 版参数配置**（支持热加载，保存即生效） |
 | `hl_ratio_alert.py` | 比率监控 + Bark 手机报警（只读行情，不下单） |
-| `.github/workflows/go-build.yml` | GitHub Actions：Go 交叉编译 + 签名向量测试 |
+| `.github/workflows/go-build.yml` | GitHub Actions：编译 Linux amd64 二进制 + 测试 |
 | `README.md` | 本文档 |
 
 ---
@@ -125,12 +126,31 @@ SPLIT_N = 4~6             # 拆单，每片 ~3~5 币，配合 SLICE_DELAY 分批
 
 ```bash
 go build -trimpath -o hlstrat ./cmd/hlstrat
-./hlstrat                        # 模拟模式
+./hlstrat                        # 模拟模式（读取 ./hype.toml）
 HL_SECRET_KEY='0x...' ./hlstrat  # 实盘
-go test ./...                    # 校验签名向量与数值格式
+go test ./...                    # 校验签名向量、数值格式与配置解析
 ```
 
-不装 Go 也可以直接用 GitHub Actions 产物：推送后到仓库 **Actions → go build** 下载，覆盖 Linux amd64/arm64 与 Windows amd64（如 `hlstrat-linux-amd64`），静态编译、免运行时依赖。
+不装 Go 也可以直接用 GitHub Actions 产物：推送后到仓库 **Actions → go build** 下载 `hlstrat-linux-amd64`，静态编译、免运行时依赖。
+
+### 配置文件与热加载（`hype.toml`）
+
+策略参数不再写死在源码，全部集中在仓库根目录的 `hype.toml`：
+
+| 段 | 内容 |
+|---|---|
+| `[strategy]` | 网格参数：`q_usdc`、`split_n`、`max_grids`、`p1`、`step_x`、`slice_delay`、`leverage`、`ema_alpha` |
+| `[execution]` | 滑点、行情有效期、对冲失衡阈值、保证金缓冲、成交等待、重试次数、单次动作上限 |
+| `[risk]` | 止损金额、退出是否平仓、失败/对账异常时是否自动平仓 |
+| `[exchange]` | 启动时是否把杠杆同步到交易所 |
+
+- 路径默认 `./hype.toml`，可用 `-config /path/to/hype.toml` 或环境变量 `HL_CONFIG` 指定。
+- **热加载**：每秒检测文件的 mtime/size，保存后 1 秒内生效，无需重启；UI 会显示当前配置文件路径，日志区出现 `[配置] ✅ 已热加载 …：q_usdc 1500→800` 这样的变更摘要。
+- **只影响后续动作**：已建层的仓位不会追溯调整，止盈仍按当前持仓均分。
+- **坏配置不会带病运行**：解析或校验失败时保留旧配置并打印 `[配置] ❌ 热加载失败…`，程序继续用旧值交易。
+- 未知字段（拼写错误）会直接报错并指出具体键名，例如 `未知配置项: strategy.q_uds`。
+- 实盘中修改 `leverage` 会异步把新杠杆同步到交易所（失败只告警，不中断交易）。
+- `HL_STOP_LOSS_USDC` 设置时会覆盖配置文件里的 `risk.stop_loss_usdc`（UI 启动提示会说明）。
 
 ---
 

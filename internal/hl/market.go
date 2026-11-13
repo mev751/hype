@@ -23,14 +23,28 @@ type Quote struct {
 type PriceState struct {
 	mu     sync.RWMutex
 	quotes map[string]*Quote
+	maxAge time.Duration
 }
 
 // NewPriceState 初始化两条腿的盘口容器。
 func NewPriceState() *PriceState {
-	return &PriceState{quotes: map[string]*Quote{
-		SymSKHY: {},
-		SymSKHX: {},
-	}}
+	return &PriceState{
+		quotes: map[string]*Quote{
+			SymSKHY: {},
+			SymSKHX: {},
+		},
+		maxAge: 5 * time.Second,
+	}
+}
+
+// SetMaxAge 设置行情有效期（支持热加载）。
+func (p *PriceState) SetMaxAge(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.maxAge = d
 }
 
 // Update 更新盘口（bid/ask 为买卖一价）。
@@ -72,7 +86,7 @@ func (p *PriceState) Fresh() (pSKHYBid, pSKHXAsk float64, ok bool) {
 		return 0, 0, false
 	}
 	now := time.Now()
-	if now.Sub(hy.TS) > PriceMaxAge || now.Sub(hx.TS) > PriceMaxAge {
+	if now.Sub(hy.TS) > p.maxAge || now.Sub(hx.TS) > p.maxAge {
 		return 0, 0, false
 	}
 	return hy.Bid, hx.Ask, true

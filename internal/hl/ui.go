@@ -3,6 +3,7 @@ package hl
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -35,13 +36,21 @@ func RenderUI(snap Snapshot, prices *PriceState, eng *ShortGridEngine, wsConnect
 		kRaw = &v
 	}
 
+	params := StrategyParams{
+		P1: 1.45, StepX: 0.003, QUSDC: 1500, SplitN: 1, MaxGrids: 14,
+		SliceDelay: 750 * time.Millisecond, Leverage: 5,
+	}
+	if eng != nil {
+		params = eng.ParamsSnapshot()
+	}
+
 	modeText := "初始化中..."
 	held := 0
 	posY, posX := 0.0, 0.0
 	var nxtEntry, nxtExit *float64
 	alignTxt := "初始化..."
 	statusTxt := "等待中"
-	maxGridsText := fmt.Sprintf("%d", MaxGridsDefault)
+	maxGridsText := fmt.Sprintf("%d", params.MaxGrids)
 
 	if eng != nil {
 		if eng.LiveTrading() {
@@ -122,8 +131,9 @@ func RenderUI(snap Snapshot, prices *PriceState, eng *ShortGridEngine, wsConnect
 		"  [ 行情盘口与策略状态 ]",
 		fmt.Sprintf("  # SKHY-USDC    : 买1=%s  | 卖1=%s", fmtPriceOpt(bidHy, hasHy), fmtPriceOpt(askHy, hasHy)),
 		fmt.Sprintf("  # SKHYNIX-USDC : 买1=%s | 卖1=%s", fmtPriceOpt(bidHx, hasHx), fmtPriceOpt(askHx, hasHx)),
-		fmt.Sprintf("  # 基准P1=%v | 步长X=%v | 单次=%v | 杠杆=%d", P1, StepX, QUSDC, Leverage),
-		fmt.Sprintf("  # 拆分=%d笔(%.2fs) | 持有=[%d/%s层]", SplitN, SliceDelay.Seconds(), held, maxGridsText),
+		fmt.Sprintf("  # 基准P1=%v | 步长X=%v | 单次=%v | 杠杆=%v", params.P1, params.StepX, params.QUSDC, params.Leverage),
+		fmt.Sprintf("  # 拆分=%d笔(%.2fs) | 持有=[%d/%s层]", params.SplitN, params.SliceDelay.Seconds(), held, maxGridsText),
+		fmt.Sprintf("  # 配置文件: %s（每秒检测，保存即生效）", params.ConfigPath),
 		"  "+lineEqual,
 	)
 

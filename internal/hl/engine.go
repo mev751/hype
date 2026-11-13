@@ -69,6 +69,23 @@ type ShortGridEngine struct {
 	p1       float64
 	x        float64
 
+	// 可热加载的执行参数
+	sliceDelay   time.Duration
+	emaAlpha     float64
+	leverage     float64
+	pairSlippage float64
+	orderRetries int
+	fillWait     time.Duration
+	hedgeTol     float64
+	marginBuffer float64
+	maxActions   int
+
+	autoFlattenOnError     bool
+	autoFlattenOnReconcile bool
+	enforceLeverage        bool
+
+	store *ConfigStore
+
 	positionsHeld  int
 	posSKHY        float64
 	posSKHX        float64
@@ -99,35 +116,45 @@ type ShortGridEngine struct {
 	workerWG  sync.WaitGroup
 }
 
-// NewShortGridEngine 构造引擎；live 初始化失败时降级为模拟模式（与 Python 行为一致）。
-func NewShortGridEngine(ctx context.Context, cfg Config, g *Globals, api *API,
-	q float64, splitN, maxGrids int, p1, x float64) (*ShortGridEngine, error) {
-
-	if splitN < 1 {
-		return nil, fmt.Errorf("SPLIT_N 必须 >= 1")
-	}
-	if x <= 0 {
-		return nil, fmt.Errorf("STEP_X 必须 > 0")
-	}
+// NewShortGridEngine 构造引擎；参数取自 ConfigStore（配置文件 + 默认值）。
+// live 初始化失败时降级为模拟模式（与 Python 行为一致）。
+func NewShortGridEngine(ctx context.Context, env Env, store *ConfigStore, g *Globals, api *API) (*ShortGridEngine, error) {
+	cfg := store.Current()
+	s := cfg.Strategy
 
 	e := &ShortGridEngine{
-		qPerGrid:       q,
-		splitN:         splitN,
-		maxGrids:       maxGrids,
-		p1:             p1,
-		x:              x,
+		qPerGrid:     s.QUSDC,
+		splitN:       s.SplitN,
+		maxGrids:     s.MaxGrids,
+		p1:           s.P1,
+		x:            s.StepX,
+		sliceDelay:   secondsToDuration(s.SliceDelay),
+		emaAlpha:     s.EMAAlpha,
+		leverage:     s.Leverage,
+		pairSlippage: cfg.Execution.PairSlippagePct,
+		orderRetries: cfg.Execution.OrderRetries,
+		fillWait:     secondsToDuration(cfg.Execution.FillWait),
+		hedgeTol:     cfg.Execution.HedgeImbalanceTol,
+		marginBuffer: cfg.Execution.MarginBufferMultiplier,
+		maxActions:   cfg.Execution.MaxActionsPerTick,
+
+		autoFlattenOnError:     cfg.Risk.AutoFlattenOnError,
+		autoFlattenOnReconcile: cfg.Risk.AutoFlattenOnReconcileErr,
+		enforceLeverage:        cfg.Exchange.EnforceLeverage,
+
 		decHY:          4,
 		decHX:          4,
 		layerEntryData: map[int]LayerEntry{},
 		api:            api,
 		globals:        g,
-		walletAddr:     cfg.WalletAddr,
+		walletAddr:     env.WalletAddr,
 		tickCh:         make(chan Tick, 1),
 		flattenCh:      make(chan FlattenRequest, 1),
+		store:          store,
 	}
 
-	if cfg.SecretKey != "" && cfg.WalletAddr != "" {
-		if err := e.initializeExchange(ctx, cfg.SecretKey); err != nil {
+	if env.SecretKey != "" && env.WalletAddr != "" {
+		if err := e.initializeExchange(ctx, env.SecretKey, cfg); err != nil {
 			LogError(g, "钱包与官方 SDK 初始化失败，已降级为模拟模式", err)
 			e.liveTrading = false
 			e.key = nil
@@ -136,7 +163,98 @@ func NewShortGridEngine(ctx context.Context, cfg Config, g *Globals, api *API,
 	return e, nil
 }
 
-func (e *ShortGridEngine) initializeExchange(ctx context.Context, secretKey string) error {
+// ApplyConfig 应用热加载后的新配置（只影响后续动作，不追溯已建层）。
+func (e *ShortGridEngine) ApplyConfig(cfg Config) {
+	s := cfg.Strategy
+
+	e.mu.Lock()
+	oldLeverage := e.leverage
+	oldP1, oldX := e.p1, e.x
+	e.qPerGrid = s.QUSDC
+	e.splitN = s.SplitN
+	e.maxGrids = s.MaxGrids
+	e.p1 = s.P1
+	e.x = s.StepX
+	e.sliceDelay = secondsToDuration(s.SliceDelay)
+	e.emaAlpha = s.EMAAlpha
+	e.leverage = s.Leverage
+	e.pairSlippage = cfg.Execution.PairSlippagePct
+	e.orderRetries = cfg.Execution.OrderRetries
+	e.fillWait = secondsToDuration(cfg.Execution.FillWait)
+	e.hedgeTol = cfg.Execution.HedgeImbalanceTol
+	e.marginBuffer = cfg.Execution.MarginBufferMultiplier
+	e.maxActions = cfg.Execution.MaxActionsPerTick
+	e.autoFlattenOnError = cfg.Risk.AutoFlattenOnError
+	e.autoFlattenOnReconcile = cfg.Risk.AutoFlattenOnReconcileErr
+	live := e.liveTrading
+	e.mu.Unlock()
+
+	if oldP1 != s.P1 || oldX != s.StepX {
+		logInfo("配置热加载: 网格 P1 %v→%v, STEP_X %v→%v", oldP1, s.P1, oldX, s.StepX)
+	}
+
+	if live && oldLeverage != s.Leverage {
+		go func() {
+			if err := e.syncExchangeLeverage(int(math.Round(s.Leverage))); err != nil {
+				e.addLog(fmt.Sprintf("[配置] ⚠️ 杠杆已在本地调整为 %v，但同步交易所失败: %v", s.Leverage, err))
+				logErrorf("同步交易所杠杆失败: %v", err)
+				return
+			}
+			e.addLog(fmt.Sprintf("[配置] 杠杆已调整为 %v 倍并同步到交易所", s.Leverage))
+			logInfo("交易所杠杆已同步为 %v 倍", s.Leverage)
+		}()
+	}
+}
+
+func (e *ShortGridEngine) syncExchangeLeverage(leverage int) error {
+	e.mu.Lock()
+	key := e.key
+	coinToAsset := e.coinToAsset
+	e.mu.Unlock()
+	if key == nil {
+		return fmt.Errorf("实盘密钥未就绪")
+	}
+	for _, coin := range []string{CoinSKHY, CoinSKHX} {
+		if err := e.updateLeverage(context.Background(), key, coinToAsset[coin], leverage); err != nil {
+			return fmt.Errorf("%s: %w", coin, err)
+		}
+	}
+	return nil
+}
+
+// StrategyParams 供 UI 展示的当前策略参数快照。
+type StrategyParams struct {
+	P1         float64
+	StepX      float64
+	QUSDC      float64
+	SplitN     int
+	MaxGrids   int
+	SliceDelay time.Duration
+	Leverage   float64
+	ConfigPath string
+}
+
+// ParamsSnapshot 读取策略参数快照。
+func (e *ShortGridEngine) ParamsSnapshot() StrategyParams {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	path := ""
+	if e.store != nil {
+		path = e.store.Path()
+	}
+	return StrategyParams{
+		P1:         e.p1,
+		StepX:      e.x,
+		QUSDC:      e.qPerGrid,
+		SplitN:     e.splitN,
+		MaxGrids:   e.maxGrids,
+		SliceDelay: e.sliceDelay,
+		Leverage:   e.leverage,
+		ConfigPath: path,
+	}
+}
+
+func (e *ShortGridEngine) initializeExchange(ctx context.Context, secretKey string, cfg Config) error {
 	coinToAsset, assetToSz, err := BuildAssetMap(ctx, e.api)
 	if err != nil {
 		return err
@@ -159,13 +277,14 @@ func (e *ShortGridEngine) initializeExchange(ctx context.Context, secretKey stri
 		}
 	}
 
-	if EnforceExchangeLeverage {
+	leverage := int(math.Round(cfg.Strategy.Leverage))
+	if cfg.Exchange.EnforceLeverage {
 		for _, coin := range []string{CoinSKHY, CoinSKHX} {
-			if err := e.updateLeverage(ctx, key, coinToAsset[coin], Leverage); err != nil {
+			if err := e.updateLeverage(ctx, key, coinToAsset[coin], leverage); err != nil {
 				return fmt.Errorf("设置 %s 杠杆失败: %w", coin, err)
 			}
 		}
-		logInfo("已将 %s / %s 设置为 %d 倍全仓", CoinSKHY, CoinSKHX, Leverage)
+		logInfo("已将 %s / %s 设置为 %d 倍全仓", CoinSKHY, CoinSKHX, leverage)
 	}
 
 	e.key = key
@@ -247,7 +366,7 @@ func (e *ShortGridEngine) OnTick(k, pSKHY, pSKHX float64) {
 		v := k
 		e.kSmoothed = &v
 	} else {
-		v := EMAAlpha*k + (1.0-EMAAlpha)*(*e.kSmoothed)
+		v := e.emaAlpha*k + (1.0-e.emaAlpha)*(*e.kSmoothed)
 		e.kSmoothed = &v
 	}
 	smoothed := *e.kSmoothed
@@ -346,6 +465,35 @@ func (e *ShortGridEngine) RequestEmergencyFlatten(pSKHY, pSKHX float64, reason s
 // 网格主逻辑
 // ------------------------------
 
+// engineParams 执行参数的一次性快照，避免热加载期间读写竞争。
+type engineParams struct {
+	sliceDelay         time.Duration
+	pairSlippage       float64
+	orderRetries       int
+	fillWait           time.Duration
+	hedgeTol           float64
+	marginBuffer       float64
+	maxActions         int
+	leverage           float64
+	autoFlattenOnError bool
+}
+
+func (e *ShortGridEngine) snapshotExec() engineParams {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return engineParams{
+		sliceDelay:         e.sliceDelay,
+		pairSlippage:       e.pairSlippage,
+		orderRetries:       e.orderRetries,
+		fillWait:           e.fillWait,
+		hedgeTol:           e.hedgeTol,
+		marginBuffer:       e.marginBuffer,
+		maxActions:         e.maxActions,
+		leverage:           e.leverage,
+		autoFlattenOnError: e.autoFlattenOnError,
+	}
+}
+
 func (e *ShortGridEngine) processTick(k, pSKHY, pSKHX float64) {
 	e.mu.Lock()
 	halted := e.halted
@@ -355,14 +503,15 @@ func (e *ShortGridEngine) processTick(k, pSKHY, pSKHX float64) {
 		return
 	}
 
+	ep := e.snapshotExec()
 	actions := 0
-	for actions < MaxActionsPerTick && !e.Halted() {
+	for actions < ep.maxActions && !e.Halted() {
 		held := e.PositionsHeld()
 		maxGrids := e.MaxGrids()
 
 		// 🟢 建仓
 		if held < maxGrids && k >= e.p1+float64(held)*e.x {
-			requiredMargin := (e.qPerGrid * 2.0 / Leverage) * MarginBufferMultiplier
+			requiredMargin := (e.qPerGrid * 2.0 / ep.leverage) * ep.marginBuffer
 			if e.LiveTrading() && e.globals.WithdrawableMargin() < requiredMargin {
 				e.mu.Lock()
 				e.maxGrids = held
@@ -501,7 +650,7 @@ func (e *ShortGridEngine) reconcileAfterAction(expectHeld int, pSKHY, pSKHX floa
 	healthy, reason := e.positionsAreHealthy(posHy, posHx, pSKHY, pSKHX)
 	if !healthy {
 		e.halt("链上仓位不一致: " + reason)
-		if AutoFlattenOnReconcileError {
+		if e.autoFlattenReconFlag() {
 			e.flattenAll(pSKHY, pSKHX, "仓位不一致兜底")
 		}
 		return false
@@ -592,7 +741,7 @@ func (e *ShortGridEngine) positionsAreHealthy(posHy, posHx, pSKHY, pSKHX float64
 		return false, "两腿名义价值无效"
 	}
 	imbalance := math.Abs(nHy-nHx) / base
-	if imbalance > HedgeImbalanceTolerance {
+	if imbalance > e.hedgeTolerance() {
 		return false, fmt.Sprintf("两腿名义价值失衡 %.1f%%: %.2f vs %.2f", imbalance*100, nHy, nHx)
 	}
 	return true, fmt.Sprintf("对冲平衡偏差 %.1f%%", imbalance*100)
@@ -621,7 +770,7 @@ func (e *ShortGridEngine) placeOrderWithRetry(coin string, isBuy bool, sz, px fl
 	lastReason := "未执行"
 	asset := e.coinToAsset[coin]
 
-	for attempt := 1; attempt <= OrderRetries; attempt++ {
+	for attempt := 1; attempt <= e.orderRetryCount(); attempt++ {
 		wire := OrderWire{
 			Asset:      asset,
 			IsBuy:      isBuy,
@@ -640,7 +789,7 @@ func (e *ShortGridEngine) placeOrderWithRetry(coin string, isBuy bool, sz, px fl
 			if status, ok := e.queryOrderStatusByCloid(cloid); ok && status == "filled" {
 				return OrderOutcome{OK: true, Reason: "异常后 cloid 查询状态=filled", Cloid: cloid, FilledSz: sz, AvgPx: px}
 			}
-			if attempt < OrderRetries {
+			if attempt < e.orderRetryCount() {
 				time.Sleep(OrderRetrySleep)
 			}
 			continue
@@ -652,7 +801,7 @@ func (e *ShortGridEngine) placeOrderWithRetry(coin string, isBuy bool, sz, px fl
 			if status, ok := e.queryOrderStatusByCloid(cloid); ok && status == "filled" {
 				return OrderOutcome{OK: true, Reason: "异常后 cloid 查询状态=filled", Cloid: cloid, FilledSz: sz, AvgPx: px}
 			}
-			if attempt < OrderRetries {
+			if attempt < e.orderRetryCount() {
 				time.Sleep(OrderRetrySleep)
 			}
 			continue
@@ -798,15 +947,15 @@ func (e *ShortGridEngine) executePairLocked(action string, level int, pSKHY, pSK
 				map[string]any{"coin": CoinSKHX, "sz": fmt.Sprintf("%v", actualHx), "px": fmt.Sprintf("%v", pSKHX), "fee": "0", "closedPnl": "0"},
 			)
 			if !isLast {
-				time.Sleep(SliceDelay)
+				time.Sleep(e.sliceDelayDur())
 			}
 			continue
 		}
 
-		buyPxHx := MakeLimitPrice(pSKHX, true, PairSlippagePct)
-		sellPxHx := MakeLimitPrice(pSKHX, false, PairSlippagePct)
-		buyPxHy := MakeLimitPrice(pSKHY, true, PairSlippagePct)
-		sellPxHy := MakeLimitPrice(pSKHY, false, PairSlippagePct)
+		buyPxHx := MakeLimitPrice(pSKHX, true, e.pairSlippagePct())
+		sellPxHx := MakeLimitPrice(pSKHX, false, e.pairSlippagePct())
+		buyPxHy := MakeLimitPrice(pSKHY, true, e.pairSlippagePct())
+		sellPxHy := MakeLimitPrice(pSKHY, false, e.pairSlippagePct())
 
 		if action == "ENTRY" {
 			// 先建立多头 SKHX，再建立空头 SKHY
@@ -826,7 +975,7 @@ func (e *ShortGridEngine) executePairLocked(action string, level int, pSKHY, pSK
 					reason += "；SKHX 已回滚"
 				} else {
 					reason += fmt.Sprintf("；SKHX 回滚失败: %s", rollback.Reason)
-					if AutoFlattenOnError {
+					if e.autoFlattenErrFlag() {
 						e.emergencyFlatten(pSKHY, pSKHX, "成对建仓失败")
 					}
 				}
@@ -850,7 +999,7 @@ func (e *ShortGridEngine) executePairLocked(action string, level int, pSKHY, pSK
 					reason += "；SKHX 已重新对冲"
 				} else {
 					reason += fmt.Sprintf("；SKHX 回滚失败: %s", rollback.Reason)
-					if AutoFlattenOnError {
+					if e.autoFlattenErrFlag() {
 						e.emergencyFlatten(pSKHY, pSKHX, "成对止盈失败")
 					}
 				}
@@ -859,7 +1008,7 @@ func (e *ShortGridEngine) executePairLocked(action string, level int, pSKHY, pSK
 		}
 
 		if !isLast {
-			time.Sleep(SliceDelay)
+			time.Sleep(e.sliceDelayDur())
 		}
 	}
 
@@ -879,7 +1028,7 @@ func (e *ShortGridEngine) executePairLocked(action string, level int, pSKHY, pSK
 		}
 	}
 
-	time.Sleep(FillWait)
+	time.Sleep(e.fillWaitDur())
 	fills := e.fetchFillsSince(startMS)
 	relevant := make([]map[string]any, 0, len(fills))
 	for _, f := range fills {
@@ -1013,18 +1162,18 @@ func (e *ShortGridEngine) flattenAllLocked(pSKHY, pSKHX float64, reason string) 
 
 	if math.Abs(posHy) > Epsilon(e.decHY) {
 		isBuy := posHy < 0
-		px := MakeLimitPrice(pSKHY, isBuy, PairSlippagePct)
+		px := MakeLimitPrice(pSKHY, isBuy, e.pairSlippagePct())
 		res := e.placeOrderWithRetry(CoinSKHY, isBuy, RoundSize(math.Abs(posHy), e.decHY), px, true, "保护性平仓-SKHY")
 		okAll = okAll && res.OK
 	}
 	if math.Abs(posHx) > Epsilon(e.decHX) {
 		isBuy := posHx < 0 // 平多头应卖出
-		px := MakeLimitPrice(pSKHX, isBuy, PairSlippagePct)
+		px := MakeLimitPrice(pSKHX, isBuy, e.pairSlippagePct())
 		res := e.placeOrderWithRetry(CoinSKHX, isBuy, RoundSize(math.Abs(posHx), e.decHX), px, true, "保护性平仓-SKHX")
 		okAll = okAll && res.OK
 	}
 
-	time.Sleep(FillWait)
+	time.Sleep(e.fillWaitDur())
 	if posHy2, posHx2, ok2 := e.syncChainPositionsWithRetry(); ok2 {
 		e.mu.Lock()
 		e.posSKHY = math.Abs(posHy2)
@@ -1299,4 +1448,50 @@ func (e *ShortGridEngine) DecHX() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.decHX
+}
+
+// ------------------------------
+// 热加载参数读取（加锁快照，避免热加载期间读写竞争）
+// ------------------------------
+
+func (e *ShortGridEngine) sliceDelayDur() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sliceDelay
+}
+
+func (e *ShortGridEngine) pairSlippagePct() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pairSlippage
+}
+
+func (e *ShortGridEngine) orderRetryCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.orderRetries
+}
+
+func (e *ShortGridEngine) fillWaitDur() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.fillWait
+}
+
+func (e *ShortGridEngine) hedgeTolerance() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.hedgeTol
+}
+
+func (e *ShortGridEngine) autoFlattenErrFlag() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.autoFlattenOnError
+}
+
+func (e *ShortGridEngine) autoFlattenReconFlag() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.autoFlattenOnReconcile
 }

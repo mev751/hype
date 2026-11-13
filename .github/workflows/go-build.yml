@@ -7,6 +7,7 @@ on:
       - "go.sum"
       - "cmd/**"
       - "internal/**"
+      - "hype.toml"
       - ".github/workflows/go-build.yml"
   pull_request:
     paths:
@@ -21,18 +22,8 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    name: build (linux/amd64)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -44,26 +35,22 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go test（签名向量/数值格式）
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      - name: go test（签名向量/配置解析）
         run: go test -v ./...
 
-      - name: go build
+      - name: go build (linux/amd64)
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS: linux
+          GOARCH: amd64
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
-          ext=""
-          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" \
-            -o "dist/hlstrat-${GOOS}-${GOARCH}${ext}" ./cmd/hlstrat
+          go build -trimpath -ldflags="-s -w" -o dist/hlstrat-linux-amd64 ./cmd/hlstrat
           ls -lh dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: hlstrat-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
+          name: hlstrat-linux-amd64
+          path: dist/hlstrat-linux-amd64
           if-no-files-found: error
