@@ -13,7 +13,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| 主程序（当前版本，含参数依据注释） |
+| `HL_SKHY_STRAT_3.9.py` | 主程序（当前版本，含参数依据注释） |
+| `hl_ratio_alert.py` | 比率监控 + Bark 手机报警（只读行情，不下单） |
 | `README.md` | 本文档 |
 
 ---
@@ -135,6 +136,42 @@ SPLIT_N = 4~6             # 拆单，每片 ~3~5 币，配合 SLICE_DELAY 分批
 - 每层 `Q_USDC`：受 SKHX 盘口厚度约束（卖一约 1.7 币/1.5kU），单笔 ≤1500 基本零滑点。
 - 层数 `MAX_GRIDS`：`P1 + MAX_GRIDS×STEP_X` 应覆盖目标波段；当前 14 层覆盖 1.450~1.489。步长越小，相同区间需要的层数越多。
 - 杠杆 `LEVERAGE`：只影响保证金占用率（2×Q×层数/杠杆），**不直接放大利润**；利润来自实际部署名义（Q×层数）。
+
+---
+
+## 比率报警脚本（`hl_ratio_alert.py`）
+
+只订阅 `xyz:SKHY` / `xyz:SKHX` 的 l2Book，计算 `K = SKHY中价 × 10 / SKHX中价`，越过阈值时通过 Bark 推送 iOS 锁屏强提醒。只读行情，不下单、不碰私钥。
+
+> ⚠️ 币种名必须带 `xyz:` 前缀。若写成 `SKHY` / `SKHYNIX`，Hyperliquid 不会返回错误，而是**直接断开连接**，表现为"连上就断、无限重连"。
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| `LOWER_THRESHOLD` | 1.445 | 低于此值报警（alarm 铃声） |
+| `UPPER_THRESHOLD` | 1.477 | 高于此值报警（强提醒） |
+| `COOLDOWN` | 600 | 同一状态重复提醒最短间隔（秒） |
+| `STALE_SECONDS` | 30 | 行情超过该秒数未更新则不判断、不报警 |
+
+Bark Key 不写进源码，用环境变量注入：
+
+```bash
+export BARK_KEY='你的Bark Key'
+python3 hl_ratio_alert.py
+
+python3 hl_ratio_alert.py --test-alert    # 只发一条测试通知，验证 Key
+```
+
+服务器上以 systemd 常驻，Key 放在 `/etc/skhy-alert.env`（不要提交进仓库）：
+
+```bash
+sudo systemctl status skhy-alert
+sudo journalctl -u skhy-alert -f
+```
+
+---
+
+## 风险提示
+
 - 价差网格收益依赖 K 在区间内来回波动；**K 单边突破 1.489 上沿**时最多 14 层封顶，只能满仓扛回撤（上破 1.52 浮亏约 −480U，1.55 约 −820U，满载粗估）。
 - **下破 1.447** 全堆收割清仓，K 需回到 ≥1.45 才重新进场；近 14 天约 10 天 K 在 1.40~1.45，若均值回归到 1.45 以下，本网格会空转（选此区间 = 押注 K 维持 1.45~1.49）。
 - 两腿仅"按名义对齐"，并非完全对冲，绝对涨跌与资金费率仍会带来误差。
