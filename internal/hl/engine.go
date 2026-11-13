@@ -23,9 +23,9 @@ type LayerEntry struct {
 
 // Tick 行情信号
 type Tick struct {
-	K      float64
-	PSKHY  float64
-	PSKHX  float64
+	K     float64
+	PSKHY float64
+	PSKHX float64
 }
 
 // FlattenRequest 保护性平仓请求
@@ -91,12 +91,12 @@ type ShortGridEngine struct {
 	coinToAsset map[string]int
 	assetToSz   map[int]int
 
-	tickCh      chan Tick
-	flattenCh   chan FlattenRequest
-	stopCh      chan struct{}
-	stopOnce    sync.Once
-	workerUp    atomic.Bool
-	workerWG    sync.WaitGroup
+	tickCh    chan Tick
+	flattenCh chan FlattenRequest
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	workerUp  atomic.Bool
+	workerWG  sync.WaitGroup
 }
 
 // NewShortGridEngine 构造引擎；live 初始化失败时降级为模拟模式（与 Python 行为一致）。
@@ -562,7 +562,7 @@ func (e *ShortGridEngine) cycleProfit(entry LayerEntry, result PairResult, exitK
 	if exitK == 0 {
 		return -entry.Fee - result.Fees
 	}
-	return (e.qPerGrid*(entry.K-exitK)/exitK) - entry.Fee - result.Fees
+	return (e.qPerGrid * (entry.K - exitK) / exitK) - entry.Fee - result.Fees
 }
 
 // positionsAreHealthy 校验两腿方向与名义价值平衡。
