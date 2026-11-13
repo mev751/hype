@@ -2,6 +2,7 @@ name: go build
 
 on:
   push:
+    branches: [main]
     paths:
       - "go.mod"
       - "go.sum"
@@ -9,6 +10,7 @@ on:
       - "internal/**"
       - "hype.toml"
       - ".github/workflows/go-build.yml"
+    tags: ["v*"]
   pull_request:
     paths:
       - "go.mod"
@@ -17,8 +19,9 @@ on:
       - "internal/**"
   workflow_dispatch:
 
+# 需要写权限以便创建/更新 Release
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -47,10 +50,47 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           go build -trimpath -ldflags="-s -w" -o dist/hlstrat-linux-amd64 ./cmd/hlstrat
+          sha256sum dist/hlstrat-linux-amd64 | awk '{print $1"  hlstrat-linux-amd64"}' > dist/hlstrat-linux-amd64.sha256
           ls -lh dist
+          cat dist/hlstrat-linux-amd64.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: hlstrat-linux-amd64
-          path: dist/hlstrat-linux-amd64
+          path: dist/*
           if-no-files-found: error
+
+      # main 分支：自动更新 "latest" Release（免登录下载）
+      - name: publish release: latest
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest（main 自动构建）
+          body: |
+            由 main 分支自动构建，提交 ${{ github.sha }}
+
+            资产：
+            - `hlstrat-linux-amd64` —— 静态编译（CGO_ENABLED=0），Linux amd64 直接运行
+            - `hlstrat-linux-amd64.sha256` —— 校验和
+
+            下载后：
+            ```bash
+            chmod +x hlstrat-linux-amd64
+            ./hlstrat-linux-amd64 -config hype.toml
+            ```
+          files: |
+            dist/hlstrat-linux-amd64
+            dist/hlstrat-linux-amd64.sha256
+          make_latest: true
+          fail_on_unmatched_files: true
+
+      # 版本 tag（v*）：发布对应版本 Release
+      - name: publish release: version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/hlstrat-linux-amd64
+            dist/hlstrat-linux-amd64.sha256
+          fail_on_unmatched_files: true

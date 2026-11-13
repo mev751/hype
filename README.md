@@ -131,7 +131,16 @@ HL_SECRET_KEY='0x...' ./hlstrat  # 实盘
 go test ./...                    # 校验签名向量、数值格式与配置解析
 ```
 
-不装 Go 也可以直接用 GitHub Actions 产物：推送后到仓库 **Actions → go build** 下载 `hlstrat-linux-amd64`，静态编译、免运行时依赖。
+不装 Go 也可以直接下载已编译的二进制（**免登录**，main 分支每次推送自动更新）：
+
+```bash
+# 固定地址，始终指向最新一次 main 构建
+curl -L -o hlstrat https://github.com/mev751/hype/releases/download/latest/hlstrat-linux-amd64
+chmod +x hlstrat
+./hlstrat -config hype.toml
+```
+
+也可在仓库 **Releases** 页下载 `hlstrat-linux-amd64` 与其 `.sha256` 校验和；推送 `v*` tag 会额外生成对应版本的 Release。静态编译（`CGO_ENABLED=0`），免运行时依赖。
 
 ### 配置文件与热加载（`hype.toml`）
 
