@@ -123,7 +123,7 @@ func RenderUI(snap Snapshot, prices *PriceState, eng *ShortGridEngine, wsConnect
 		fmt.Sprintf("  # SKHY-USDC    : 买1=%s  | 卖1=%s", fmtPriceOpt(bidHy, hasHy), fmtPriceOpt(askHy, hasHy)),
 		fmt.Sprintf("  # SKHYNIX-USDC : 买1=%s | 卖1=%s", fmtPriceOpt(bidHx, hasHx), fmtPriceOpt(askHx, hasHx)),
 		fmt.Sprintf("  # 基准P1=%v | 步长X=%v | 单次=%v | 杠杆=%d", P1, StepX, QUSDC, Leverage),
-		fmt.Sprintf("  # 拆分=%d笔(%v) | 持有=[%d/%s层]", SplitN, SliceDelay, held, maxGridsText),
+		fmt.Sprintf("  # 拆分=%d笔(%.2fs) | 持有=[%d/%s层]", SplitN, SliceDelay.Seconds(), held, maxGridsText),
 		"  "+lineEqual,
 	)
 
