@@ -10,7 +10,6 @@ import sys
 import threading
 import requests
 from datetime import datetime
-from urllib.parse import urlparse
 
 try:
     import websocket
@@ -36,10 +35,6 @@ HL_SYMBOLS_MAP = {
 HL_COIN_TO_DISPLAY = {v: k for k, v in HL_SYMBOLS_MAP.items()}
 
 REFRESH_INTERVAL = 0.2  # 降低到 0.2s 刷新，因为不闪屏了，可以更快
-
-PROXY_HOST = None
-PROXY_PORT = None
-HTTP_PROXY = None
 
 # 数据仓库
 bn_prices = {s: None for s in BN_SYMBOLS}
@@ -71,16 +66,6 @@ def update_bn_connected():
     global bn_connected
     bn_connected = bn_book_connected or bn_mark_connected
 
-def parse_proxy(proxy_url):
-    global PROXY_HOST, PROXY_PORT, HTTP_PROXY
-    if proxy_url:
-        if not proxy_url.startswith("http"):
-            proxy_url = "http://" + proxy_url
-        HTTP_PROXY = {"http": proxy_url, "https": proxy_url}
-        parsed = urlparse(proxy_url)
-        PROXY_HOST = parsed.hostname
-        PROXY_PORT = parsed.port
-
 
 # ----------------- 初始化数据 (REST) -----------------
 def fetch_initial_prices():
@@ -90,7 +75,7 @@ def fetch_initial_prices():
     # 1. 抓币安
     try:
         url_bn = "https://fapi.binance.com/fapi/v1/ticker/bookTicker"
-        resp_bn = requests.get(url_bn, timeout=5, proxies=HTTP_PROXY)
+        resp_bn = requests.get(url_bn, timeout=5)
         if resp_bn.status_code == 200:
             for item in resp_bn.json():
                 sym = item["symbol"]
@@ -102,7 +87,7 @@ def fetch_initial_prices():
     # 1b. 抓币安资金费率打底 (premiumIndex 里同时带 lastFundingRate 和 nextFundingTime)
     try:
         url_bn_premium = "https://fapi.binance.com/fapi/v1/premiumIndex"
-        resp_premium = requests.get(url_bn_premium, timeout=5, proxies=HTTP_PROXY)
+        resp_premium = requests.get(url_bn_premium, timeout=5)
         if resp_premium.status_code == 200:
             for item in resp_premium.json():
                 sym = item.get("symbol")
@@ -119,7 +104,7 @@ def fetch_initial_prices():
     # 1c. 抓币安资金费率结算周期 (大部分是8小时一笔，部分币种会被动态调整为1h/2h/4h)
     try:
         url_bn_info = "https://fapi.binance.com/fapi/v1/fundingInfo"
-        resp_info = requests.get(url_bn_info, timeout=5, proxies=HTTP_PROXY)
+        resp_info = requests.get(url_bn_info, timeout=5)
         if resp_info.status_code == 200:
             for item in resp_info.json():
                 sym = item.get("symbol")
@@ -134,7 +119,7 @@ def fetch_initial_prices():
     headers = {"Content-Type": "application/json"}
     for display_sym, coin in HL_SYMBOLS_MAP.items():
         try:
-            resp_hl = requests.post(url_hl, json={"type": "l2Book", "coin": coin}, headers=headers, timeout=5, proxies=HTTP_PROXY)
+            resp_hl = requests.post(url_hl, json={"type": "l2Book", "coin": coin}, headers=headers, timeout=5)
             if resp_hl.status_code == 200:
                 data = resp_hl.json()
                 if "levels" in data and len(data["levels"]) > 0 and len(data["levels"][0]) > 0:
@@ -200,10 +185,7 @@ def start_bn_book_ws():
 
     while True:
         ws = websocket.WebSocketApp(url, on_message=bn_on_message, on_error=on_error, on_close=on_close, on_open=on_open)
-        kwargs = {}
-        if PROXY_HOST:
-            kwargs['http_proxy_host'], kwargs['http_proxy_port'] = PROXY_HOST, PROXY_PORT
-        ws.run_forever(**kwargs)
+        ws.run_forever()
         time.sleep(3)
 
 def start_bn_mark_ws():
@@ -232,10 +214,7 @@ def start_bn_mark_ws():
 
     while True:
         ws = websocket.WebSocketApp(url, on_message=bn_on_message, on_error=on_error, on_close=on_close, on_open=on_open)
-        kwargs = {}
-        if PROXY_HOST:
-            kwargs['http_proxy_host'], kwargs['http_proxy_port'] = PROXY_HOST, PROXY_PORT
-        ws.run_forever(**kwargs)
+        ws.run_forever()
         time.sleep(3)
 
 def start_bn_ws():
@@ -305,10 +284,7 @@ def start_hl_ws():
     url = "wss://api.hyperliquid.xyz/ws"
     while True:
         ws = websocket.WebSocketApp(url, on_message=hl_on_message, on_error=hl_on_error, on_close=hl_on_close, on_open=hl_on_open)
-        kwargs = {}
-        if PROXY_HOST:
-            kwargs['http_proxy_host'], kwargs['http_proxy_port'] = PROXY_HOST, PROXY_PORT
-        ws.run_forever(**kwargs)
+        ws.run_forever()
         time.sleep(2)
 
 
@@ -433,7 +409,4 @@ def main():
             time.sleep(1)
 
 if __name__ == "__main__":
-    for arg in sys.argv[1:]:
-        if arg.startswith('--proxy='):
-            parse_proxy(arg.split('=')[1])
     main()
