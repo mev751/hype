@@ -50,17 +50,28 @@ hl_prices = {s: None for s in HL_SYMBOLS_MAP.keys()}
 # 资金费率数据仓库
 # Binance: 每个 symbol 一个费率 + 下次结算时间(ms) + 结算周期(小时，默认8h，部分币种会被调整为1h/4h)
 bn_funding = {s: {"rate": None, "next_time": None} for s in BN_SYMBOLS}
-bn_funding_interval_hours = {s: 8 for s in BN_SYMBOLS}  # 默认8小时一笔，启动时会用 /fapi/v1/fundingInfo 校正
+bn_funding_interval_hours = {
+    "SKHYUSDT": 8,
+    "SKHYNIXUSDT": 4,  # 币安官方设定 SKHYNIXUSDT 结算周期为 4 小时
+    "BZUSDT": 8,
+    "CLUSDT": 8,
+}
 
 # Hyperliquid: 官方固定为每 1 小时结算一次，币种之间不会有差异
 HL_FUNDING_INTERVAL_HOURS = 1
 hl_funding = {s: None for s in HL_SYMBOLS_MAP.keys()}
 
 # 连接状态
+bn_book_connected = False
+bn_mark_connected = False
 bn_connected = False
 bn_error_msg = ""
 hl_connected = False
 hl_error_msg = ""
+
+def update_bn_connected():
+    global bn_connected
+    bn_connected = bn_book_connected or bn_mark_connected
 
 last_recorded_state = None
 
@@ -141,8 +152,6 @@ def fetch_initial_prices():
 
 # ----------------- Binance WebSocket -----------------
 def bn_on_message(ws, message):
-    global bn_connected
-    bn_connected = True
     try:
         data = json.loads(message)
         payload = data.get("data", {})
@@ -157,6 +166,9 @@ def bn_on_message(ws, message):
                     bn_funding[sym]["rate"] = float(rate)
                 if next_t is not None:
                     bn_funding[sym]["next_time"] = int(next_t)
+                    # 动态校验结算周期：若下次结算时间未落在8小时整点上(非00/08/16 UTC)，推导为4小时或更短
+                    if (int(next_t) // 1000) % 28800 != 0 and bn_funding_interval_hours.get(sym) == 8:
+                        bn_funding_interval_hours[sym] = 4
             return
 
         # bookTicker 推送：盘口最优买一价
@@ -167,33 +179,74 @@ def bn_on_message(ws, message):
     except:
         pass
 
-def bn_on_error(ws, error):
-    global bn_error_msg, bn_connected
-    bn_connected = False
-    bn_error_msg = str(error)
-
-def bn_on_close(ws, *args):
-    global bn_connected
-    bn_connected = False
-
-def bn_on_open(ws):
-    global bn_connected, bn_error_msg
-    bn_connected = True
-    bn_error_msg = ""
-
-def start_bn_ws():
-    # bookTicker: 盘口最优买一价；markPrice@1s: 标记价格 + 实时资金费率 + 下次结算时间
+def start_bn_book_ws():
+    global bn_book_connected, bn_error_msg
     book_streams = [f"{s.lower()}@bookTicker" for s in BN_SYMBOLS]
-    mark_streams = [f"{s.lower()}@markPrice@1s" for s in BN_SYMBOLS]
-    streams = "/".join(book_streams + mark_streams)
+    streams = "/".join(book_streams)
     url = f"wss://fstream.binance.com/stream?streams={streams}"
+
+    def on_open(ws):
+        global bn_book_connected, bn_error_msg
+        bn_book_connected = True
+        bn_error_msg = ""
+        update_bn_connected()
+
+    def on_close(ws, *args):
+        global bn_book_connected
+        bn_book_connected = False
+        update_bn_connected()
+
+    def on_error(ws, error):
+        global bn_book_connected, bn_error_msg
+        bn_book_connected = False
+        bn_error_msg = str(error)
+        update_bn_connected()
+
     while True:
-        ws = websocket.WebSocketApp(url, on_message=bn_on_message, on_error=bn_on_error, on_close=bn_on_close, on_open=bn_on_open)
+        ws = websocket.WebSocketApp(url, on_message=bn_on_message, on_error=on_error, on_close=on_close, on_open=on_open)
         kwargs = {}
         if PROXY_HOST:
             kwargs['http_proxy_host'], kwargs['http_proxy_port'] = PROXY_HOST, PROXY_PORT
         ws.run_forever(**kwargs)
         time.sleep(3)
+
+def start_bn_mark_ws():
+    global bn_mark_connected, bn_error_msg
+    # Binance USDⓈ-M Futures 将 markPrice / 实时资金费率独立路由在 /market/stream 路径下
+    mark_streams = [f"{s.lower()}@markPrice@1s" for s in BN_SYMBOLS]
+    streams = "/".join(mark_streams)
+    url = f"wss://fstream.binance.com/market/stream?streams={streams}"
+
+    def on_open(ws):
+        global bn_mark_connected, bn_error_msg
+        bn_mark_connected = True
+        bn_error_msg = ""
+        update_bn_connected()
+
+    def on_close(ws, *args):
+        global bn_mark_connected
+        bn_mark_connected = False
+        update_bn_connected()
+
+    def on_error(ws, error):
+        global bn_mark_connected, bn_error_msg
+        bn_mark_connected = False
+        bn_error_msg = str(error)
+        update_bn_connected()
+
+    while True:
+        ws = websocket.WebSocketApp(url, on_message=bn_on_message, on_error=on_error, on_close=on_close, on_open=on_open)
+        kwargs = {}
+        if PROXY_HOST:
+            kwargs['http_proxy_host'], kwargs['http_proxy_port'] = PROXY_HOST, PROXY_PORT
+        ws.run_forever(**kwargs)
+        time.sleep(3)
+
+def start_bn_ws():
+    # 启动两个并发连接：分别拉取 bookTicker (盘口) 和 markPrice (资金费率)
+    t_mark = threading.Thread(target=start_bn_mark_ws, daemon=True)
+    t_mark.start()
+    start_bn_book_ws()
 
 
 # ----------------- Hyperliquid WebSocket -----------------
@@ -290,13 +343,16 @@ def fmt_price_funding(price, funding_rate, interval_hours,  next_time_ms=None):
     return f"{p_str:<14}{f_str}"
 
 def fmt_countdown(next_time_ms):
-    """格式化距离下次资金费结算的倒计时 (mm:ss)"""
+    """格式化距离下次资金费结算的倒计时 (hh:mm:ss 或 mm:ss)"""
     if next_time_ms is None:
         return "--:--"
     remain = (next_time_ms / 1000.0) - time.time()
     if remain < 0:
         return "00:00"
-    m, s = divmod(int(remain), 60)
+    h, remainder = divmod(int(remain), 3600)
+    m, s = divmod(remainder, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
 def hl_next_funding_ms():
@@ -342,27 +398,27 @@ def render_ui(time_str, running):
         f"  BN状态: {'[连通] ●' if bn_connected else '[断开] X ' + bn_error_msg}",
         f"  HL状态: {'[连通] ●' if hl_connected else '[断开] X ' + hl_error_msg}",
         f"  记录文件: {LOG_FILE}",
-        "  " + "="*70,
+        "  " + "="*76,
         "  [ 组1: SKHY & SKHYNIX ]",
-        "                   |  Binance (USDT)                     |  Hyperliquid (USDC)",
+        "                   |  Binance (USDT)                       |  Hyperliquid (USDC)",
         f"  SKHY             |  "
-        f"{fmt_price_funding(b_sk, bn_funding['SKHYUSDT']['rate'], bn_funding_interval_hours['SKHYUSDT'], bn_funding['SKHYUSDT']['next_time']):<34} |  "
+        f"{fmt_price_funding(b_sk, bn_funding['SKHYUSDT']['rate'], bn_funding_interval_hours['SKHYUSDT'], bn_funding['SKHYUSDT']['next_time']):<36} |  "
         f"{fmt_price_funding(h_sk, hl_funding['SKHY-USDC'], HL_FUNDING_INTERVAL_HOURS, hl_next_funding_ms())}",
         f"  SKHYNIX          |  "
-        f"{fmt_price_funding(b_skx, bn_funding['SKHYNIXUSDT']['rate'], bn_funding_interval_hours['SKHYNIXUSDT'], bn_funding['SKHYNIXUSDT']['next_time']):<34} |  "
+        f"{fmt_price_funding(b_skx, bn_funding['SKHYNIXUSDT']['rate'], bn_funding_interval_hours['SKHYNIXUSDT'], bn_funding['SKHYNIXUSDT']['next_time']):<36} |  "
         f"{fmt_price_funding(h_skx, hl_funding['SKHYNIX-USDC'], HL_FUNDING_INTERVAL_HOURS, hl_next_funding_ms())}",
-        f"  比值 k           |  {fmt_p(b_k):<34} |  {fmt_p(h_k)}",
-        "  " + "-"*70,
+        f"  比值 k           |  {fmt_p(b_k):<36} |  {fmt_p(h_k)}",
+        "  " + "-"*76,
         "  [ 组2: 原油系列 ]",
-        "                   |  Binance (BZ / CL)                  |  Hyperliquid (BRENT / WTI)",
+        "                   |  Binance (BZ / CL)                    |  Hyperliquid (BRENT / WTI)",
         f"  布伦特 (BRENT)   |  "
-        f"{fmt_price_funding(b_bz, bn_funding['BZUSDT']['rate'], bn_funding_interval_hours['BZUSDT'], bn_funding['BZUSDT']['next_time']):<34} |  "
+        f"{fmt_price_funding(b_bz, bn_funding['BZUSDT']['rate'], bn_funding_interval_hours['BZUSDT'], bn_funding['BZUSDT']['next_time']):<36} |  "
         f"{fmt_price_funding(h_bz, hl_funding['BRENTOIL-USDC'], HL_FUNDING_INTERVAL_HOURS, hl_next_funding_ms())}",
         f"  WTI原油 (WTI)    |  "
-        f"{fmt_price_funding(b_cl, bn_funding['CLUSDT']['rate'], bn_funding_interval_hours['CLUSDT'], bn_funding['CLUSDT']['next_time']):<34} |  "
+        f"{fmt_price_funding(b_cl, bn_funding['CLUSDT']['rate'], bn_funding_interval_hours['CLUSDT'], bn_funding['CLUSDT']['next_time']):<36} |  "
         f"{fmt_price_funding(h_cl, hl_funding['WTIOIL-USDC'], HL_FUNDING_INTERVAL_HOURS, hl_next_funding_ms())}",
-        f"  差值 d           |  {fmt_p(b_d, True):<34} |  {fmt_p(h_d, True)}",
-        "  " + "="*70,
+        f"  差值 d           |  {fmt_p(b_d, True):<36} |  {fmt_p(h_d, True)}",
+        "  " + "="*76,
         "  [Ctrl+C 退出]"
     ]
     

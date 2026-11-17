@@ -6,6 +6,7 @@ __pycache__/
 # Logs
 *.log
 monitor.log
+*.csv
 
 # Environment & Secrets
 .env
