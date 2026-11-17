@@ -36,8 +36,8 @@ COIN_ADR = "xyz:SKHY"      # SKHY（美股 ADR）
 COIN_KR = "xyz:SKHX"       # SKHYNIX（韩股，本尊）
 SCALE = 10                 # 比率 = SKHY * 10 / SKHX
 
-LOWER_THRESHOLD = 1.445    # 低于此值报警
-UPPER_THRESHOLD = 1.477    # 高于此值报警
+LOWER_THRESHOLD = 1.45    # 低于此值报警
+UPPER_THRESHOLD = 1.497    # 高于此值报警
 COOLDOWN = 600             # 同一异常状态重复提醒最短间隔（秒）
 STALE_SECONDS = 30         # 价格超过该秒数未更新则视为失效，不参与判断
 
