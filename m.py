@@ -7,7 +7,6 @@ import json
 import time
 import os
 import sys
-import csv
 import threading
 import requests
 from datetime import datetime
@@ -36,7 +35,6 @@ HL_SYMBOLS_MAP = {
 }
 HL_COIN_TO_DISPLAY = {v: k for k, v in HL_SYMBOLS_MAP.items()}
 
-LOG_FILE = "dual_monitor_records.csv"
 REFRESH_INTERVAL = 0.2  # 降低到 0.2s 刷新，因为不闪屏了，可以更快
 
 PROXY_HOST = None
@@ -72,8 +70,6 @@ hl_error_msg = ""
 def update_bn_connected():
     global bn_connected
     bn_connected = bn_book_connected or bn_mark_connected
-
-last_recorded_state = None
 
 def parse_proxy(proxy_url):
     global PROXY_HOST, PROXY_PORT, HTTP_PROXY
@@ -316,16 +312,7 @@ def start_hl_ws():
         time.sleep(2)
 
 
-# ----------------- 数据落地与渲染 UI -----------------
-def init_csv():
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, mode='w', newline='', encoding='utf-8') as f:
-            csv.writer(f).writerow([
-                'Time', 
-                'BN_SKHY', 'BN_SKHYNIX', 'BN_k', 'BN_BZ', 'BN_CL', 'BN_d',
-                'HL_SKHY', 'HL_SKHYNIX', 'HL_k', 'HL_BRENT', 'HL_WTI', 'HL_d'
-            ])
-
+# ----------------- 终端渲染 UI -----------------
 def fmt_p(val, sign=False):
     """格式化价格输出"""
     if val is None: return "Waiting..."
@@ -376,18 +363,6 @@ def render_ui(time_str, running):
     h_k = (h_sk * 10 / h_skx) if (h_sk and h_skx) else None
     h_d = (h_bz - h_cl) if (h_bz and h_cl) else None
 
-    # CSV 存储逻辑：任意一个底层价格有变动就存
-    global last_recorded_state
-    current_state = (b_sk, b_skx, b_bz, b_cl, h_sk, h_skx, h_bz, h_cl)
-    if current_state != last_recorded_state and any(current_state):
-        with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
-            csv.writer(f).writerow([
-                time_str,
-                b_sk or '', b_skx or '', b_k or '', b_bz or '', b_cl or '', b_d or '',
-                h_sk or '', h_skx or '', h_k or '', h_bz or '', h_cl or '', h_d or ''
-            ])
-        last_recorded_state = current_state
-
     # -- 控制台无闪烁渲染 (核心) --
     sys.stdout.write("\033[H") # 光标归位到左上角 (取代 cls)
     
@@ -397,7 +372,6 @@ def render_ui(time_str, running):
         f"  时间: {time_str}   |   运行时间: {running} 秒",
         f"  BN状态: {'[连通] ●' if bn_connected else '[断开] X ' + bn_error_msg}",
         f"  HL状态: {'[连通] ●' if hl_connected else '[断开] X ' + hl_error_msg}",
-        f"  记录文件: {LOG_FILE}",
         "  " + "="*76,
         "  [ 组1: SKHY & SKHYNIX ]",
         "                   |  Binance (USDT)                       |  Hyperliquid (USDC)",
@@ -433,7 +407,6 @@ def main():
     print("正在拉取底层双端数据...")
     
     fetch_initial_prices()
-    init_csv()
     
     threading.Thread(target=start_bn_ws, daemon=True).start()
     threading.Thread(target=start_hl_ws, daemon=True).start()
